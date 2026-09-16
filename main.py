@@ -1,4 +1,3 @@
-import time
 import sqlite3
 import requests
 from bs4 import BeautifulSoup
@@ -121,11 +120,8 @@ def check_innocentive():
 
 if __name__ == "__main__":
     init_db()
-    while True:
-        print("شروع عملية فحص جميع المنصات المحددة...")
-        check_herox()
-        check_kaggle()
-        check_innocentive()
-        print("انتهى الفحص بنجاح. الانتظار لمدة 6 ساعات...")
-        time.sleep(21600)
-
+    print("شروع عملية فحص جميع المنصات المحددة...")
+    check_herox()
+    check_kaggle()
+    check_innocentive()
+    print("انتهى الفحص بنجاح!")
