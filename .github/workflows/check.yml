@@ -2,7 +2,7 @@ name: Run Finder Bot
 
 on:
   schedule:
-    - cron: '0 0 * * *' # يعمل تلقائياً مرة كل 24 ساعة
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -19,7 +19,9 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install requests playwright
+          playwright install chromium
+          playwright install-deps
 
       - name: Run Script
         run: python main.py
