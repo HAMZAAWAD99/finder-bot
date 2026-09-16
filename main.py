@@ -10,6 +10,8 @@ new_challenges_count = 0
 def init_db():
     conn = sqlite3.connect("seen_challenges.db")
     cursor = conn.cursor()
+    # مسح الجدول القديم لإجبار السكربت على إرسال كافة التحديات المتاحة فوراً
+    cursor.execute("DROP TABLE IF EXISTS challenges")
     cursor.execute("CREATE TABLE IF NOT EXISTS challenges (link TEXT PRIMARY KEY)")
     conn.commit()
     conn.close()
@@ -52,7 +54,6 @@ def send_telegram(platform, title, prize, date_info, description, link):
 
 def scrape_all_with_playwright():
     global new_challenges_count
-    init_db()
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -73,7 +74,7 @@ def scrape_all_with_playwright():
                 
                 title = item.inner_text().strip().split("\n")[0]
                 if title and link and not is_seen(link):
-                    send_telegram("HeroX", title, "راجع الرابط", "مفتوح للتقديم", "تحدي ابتكاري متاح على منصة HeroX.", link)
+                    send_telegram("HeroX", title, "راجع الرابط للتفاصيل", "مفتوح للتقديم", "تحدي ابتكاري متاح على منصة HeroX.", link)
                     mark_seen(link)
                     new_challenges_count += 1
         except Exception as e:
@@ -103,7 +104,7 @@ def scrape_all_with_playwright():
 
         browser.close()
 
-# ---------------- 3. فحص Kaggle عبر الـ API الرسمي ----------------
+# ---------------- 3. فحص Kaggle ----------------
 def check_kaggle():
     global new_challenges_count
     print("--- جاري فحص Kaggle ---")
@@ -127,12 +128,15 @@ def check_kaggle():
         print(f"Kaggle Error: {e}")
 
 if __name__ == "__main__":
-    print("بدء عملية الفحص الشامل باستخدام المتصفح السحابي...")
+    print("تحديث وتصفير السجل...")
+    init_db()
+    
+    print("بدء عملية الفحص الشامل وجلب جميع التحديات المتاحة...")
     scrape_all_with_playwright()
     check_kaggle()
     
     if new_challenges_count == 0:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "✅ **تقرير الفحص:** تم تصفح المنصات بنجاح، ولم يتم العثور على تحديات *جديدة* غير مسجلة لدينا مسبقاً."}, timeout=15)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "✅ **تقرير الفحص:** تم تصفح كافة المنصات بنجاح ولم يتم العثور على أي تحديات معلنة حالياً."}, timeout=15)
         
     print("انتهى الفحص بنجاح!")
