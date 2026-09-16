@@ -1,5 +1,6 @@
 import sqlite3
 import requests
+from playwright.sync_api import sync_playwright
 
 TELEGRAM_BOT_TOKEN = "8846822722:AAGO6PGiEdr-QndV9mqVUEHGCCwDjIo3ZNc"
 TELEGRAM_CHAT_ID = "1178298208"
@@ -36,155 +37,102 @@ def send_telegram(platform, title, prize, date_info, description, link):
     short_desc = description[:250] + "..." if len(description) > 250 else description
     
     msg = (
-        f"🚨 **تحدي جديد مفتوح على {platform}!**\n\n"
+        f"🚨 **تحدي مفتوح على {platform}!**\n\n"
         f"📌 **التحدي:** {title}\n"
         f"💰 **الجائزة:** {prize}\n"
-        f"📅 **الموعد / الحالة:** {date_info}\n\n"
+        f"📅 **التاريخ / الحالة:** {date_info}\n\n"
         f"📝 **التفاصيل:**\n{short_desc}\n\n"
-        f"🔗 [اضغط هنا للتقديم والمشاركة]({link})"
+        f"🔗 [اضغط هنا للوصول للتحدي]({link})"
     )
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload, timeout=15)
     except Exception as e:
-        print(f"Error sending message: {e}")
+        print(f"Telegram Error: {e}")
 
-def send_status_update(message_text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message_text, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload, timeout=15)
-    except Exception as e:
-        print(f"Error sending status message: {e}")
-
-# 1. فحص HeroX
-def check_herox():
+def scrape_all_with_playwright():
     global new_challenges_count
-    print("--- جاري فحص HeroX ---")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    api_url = "https://www.herox.com/api/challenges?status=open" 
-    try:
-        res = requests.get(api_url, headers=headers, timeout=15)
-        if res.status_code == 200:
-            data = res.json()
-            challenges = data.get("challenges", []) or data.get("results", [])
-            for item in challenges[:10]:
-                title = item.get("title", "غير محدد")
-                link = "https://www.herox.com" + item.get("url", "")
-                prize = item.get("prize_amount", "غير محدد")
-                date_info = item.get("submission_deadline") or item.get("start_date") or "مفتوح للتقديم"
-                description = item.get("description") or item.get("summary") or "تحدي ابتكاري على HeroX."
+    init_db()
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        page = context.new_page()
 
-                if link and not is_seen(link):
-                    send_telegram("HeroX", title, prize, date_info, description, link)
+        # ---------------- 1. فحص HeroX ----------------
+        print("--- جاري تصفح HeroX ---")
+        try:
+            page.goto("https://www.herox.com/explore", wait_until="networkidle", timeout=30000)
+            items = page.query_selector_all("a[href*='/challenge/']")
+            print(f"تم العثور على {len(items)} عنصر في HeroX")
+            
+            for item in items[:15]:
+                link = item.get_attribute("href")
+                if link and not link.startswith("http"):
+                    link = "https://www.herox.com" + link
+                
+                title = item.inner_text().strip().split("\n")[0]
+                if title and link and not is_seen(link):
+                    send_telegram("HeroX", title, "راجع الرابط", "مفتوح للتقديم", "تحدي ابتكاري متاح على منصة HeroX.", link)
                     mark_seen(link)
                     new_challenges_count += 1
-                    print(f"HeroX Sent: {title}")
-    except Exception as e:
-        print(f"HeroX Error: {e}")
+        except Exception as e:
+            print(f"HeroX Error: {e}")
 
-# 2. فحص Kaggle
+        # ---------------- 2. فحص InnoCentive ----------------
+        print("--- جاري تصفح InnoCentive ---")
+        try:
+            page.goto("https://challenge-center.community.innocentive.com/innovation-management/challenges", wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(4000)
+            
+            cards = page.query_selector_all("a[href*='/challenge/']")
+            print(f"تم العثور على {len(cards)} عنصر في InnoCentive")
+            
+            for card in cards[:15]:
+                link = card.get_attribute("href")
+                if link and not link.startswith("http"):
+                    link = "https://challenge-center.community.innocentive.com" + link
+                
+                title = card.inner_text().strip().split("\n")[0]
+                if title and len(title) > 5 and not is_seen(link):
+                    send_telegram("InnoCentive", title, "جوائز مالية (راجع التفاصيل)", "مفتوح حالياً", "تحدي ابتكاري يبحث عن حلول على InnoCentive.", link)
+                    mark_seen(link)
+                    new_challenges_count += 1
+        except Exception as e:
+            print(f"InnoCentive Error: {e}")
+
+        browser.close()
+
+# ---------------- 3. فحص Kaggle عبر الـ API الرسمي ----------------
 def check_kaggle():
     global new_challenges_count
     print("--- جاري فحص Kaggle ---")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    api_url = "https://www.kaggle.com/api/v1/competitions/list"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(api_url, headers=headers, timeout=15)
+        res = requests.get("https://www.kaggle.com/api/v1/competitions/list", headers=headers, timeout=15)
         if res.status_code == 200:
             items = res.json()
-            for item in items[:10]:
-                title = item.get("title", "غير محدد")
+            for item in items[:15]:
+                title = item.get("title", "مسابقة Kaggle")
                 link = item.get("url", "https://www.kaggle.com/competitions")
-                prize = item.get("reward", "غير محدد")
-                date_info = item.get("deadline") or "مفتوح حالياً"
-                description = item.get("description") or item.get("briefDescription") or "مسابقة ابتكارية على Kaggle."
+                prize = str(item.get("reward", "غير محدد"))
+                date_info = str(item.get("deadline", "مفتوح"))
+                description = item.get("briefDescription") or "مسابقة ابتكارية متاح التنافس فيها على Kaggle."
 
                 if link and not is_seen(link):
                     send_telegram("Kaggle", title, prize, date_info, description, link)
                     mark_seen(link)
                     new_challenges_count += 1
-                    print(f"Kaggle Sent: {title}")
     except Exception as e:
         print(f"Kaggle Error: {e}")
 
-# 3. فحص InnoCentive (Wazoku GraphQL API)
-def check_innocentive():
-    global new_challenges_count
-    print("--- جاري فحص InnoCentive ---")
-    url = "https://challenge-center.community.innocentive.com/api/graphql"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Content-Type": "application/json"
-    }
-    query = """
-    query {
-      challenges(first: 10, filter: {status: OPEN}) {
-        edges {
-          node {
-            id
-            title
-            summary
-            rewardAmount
-            slug
-          }
-        }
-      }
-    }
-    """
-    try:
-        res = requests.post(url, json={'query': query}, headers=headers, timeout=15)
-        if res.status_code == 200:
-            data = res.json()
-            challenges = data.get('data', {}).get('challenges', {}).get('edges', [])
-            for item in challenges:
-                node = item.get('node', {})
-                title = node.get('title', 'تحدي جديد على InnoCentive')
-                slug = node.get('slug', '')
-                link = f"https://challenge-center.community.innocentive.com/innovation-management/challenge/{slug}" if slug else "https://challenge-center.community.innocentive.com"
-                prize = str(node.get('rewardAmount', 'راجع الرابط'))
-                description = node.get('summary', 'تحدي مفتوح للحلول والابتكار على منصة InnoCentive.')
-
-                if link and not is_seen(link):
-                    send_telegram("InnoCentive", title, prize, "مفتوح للتقديم", description, link)
-                    mark_seen(link)
-                    new_challenges_count += 1
-                    print(f"InnoCentive Sent: {title}")
-        else:
-            fallback_innocentive()
-    except Exception as e:
-        print(f"InnoCentive API Error: {e}")
-        fallback_innocentive()
-
-def fallback_innocentive():
-    global new_challenges_count
-    url = "https://www.innocentive.com/api/challenge/v1/challenges"
-    try:
-        res = requests.get(url, timeout=15)
-        if res.status_code == 200:
-            items = res.json()
-            for item in items[:10]:
-                title = item.get("title", "تحدي InnoCentive")
-                link = item.get("url", "https://innocentive.com")
-                prize = str(item.get("totalAward", "راجع التفاصيل"))
-                description = item.get("description", "تحدي مفتوح في InnoCentive.")
-                
-                if link and not is_seen(link):
-                    send_telegram("InnoCentive", title, prize, "مفتوح", description, link)
-                    mark_seen(link)
-                    new_challenges_count += 1
-    except Exception as e:
-        print(f"Fallback Error: {e}")
-
 if __name__ == "__main__":
-    init_db()
-    print("شروع عملية فحص جميع المنصات المحددة...")
-    
-    check_herox()
+    print("بدء عملية الفحص الشامل باستخدام المتصفح السحابي...")
+    scrape_all_with_playwright()
     check_kaggle()
-    check_innocentive()
     
     if new_challenges_count == 0:
-        send_status_update("✅ **تقرير الفحص الدوري:** تم فحص كافة المنصات (HeroX, Kaggle, InnoCentive) بنجاح. لا توجد تحديات جديدة غير مسجلة حالياً.")
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "✅ **تقرير الفحص:** تم تصفح المنصات بنجاح، ولم يتم العثور على تحديات *جديدة* غير مسجلة لدينا مسبقاً."}, timeout=15)
         
     print("انتهى الفحص بنجاح!")
