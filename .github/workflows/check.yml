@@ -2,7 +2,7 @@ name: Run Finder Bot
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 0 * * *' # يعمل تلقائياً مرة واحدة كل 24 ساعة (عند منتصف الليل)
   workflow_dispatch:
 
 jobs:
