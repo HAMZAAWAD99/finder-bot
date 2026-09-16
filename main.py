@@ -1,7 +1,5 @@
 import sqlite3
 import requests
-import json
-from bs4 import BeautifulSoup
 
 TELEGRAM_BOT_TOKEN = "8846822722:AAGO6PGiEdr-QndV9mqVUEHGCCwDjIo3ZNc"
 TELEGRAM_CHAT_ID = "1178298208"
@@ -41,8 +39,8 @@ def send_telegram(platform, title, prize, date_info, description, link):
         f"🚨 **تحدي جديد مفتوح على {platform}!**\n\n"
         f"📌 **التحدي:** {title}\n"
         f"💰 **الجائزة:** {prize}\n"
-        f"📅 **الموعد النهائي / الحالة:** {date_info}\n\n"
-        f"📝 **التفاصيل والوصف:**\n{short_desc}\n\n"
+        f"📅 **الموعد / الحالة:** {date_info}\n\n"
+        f"📝 **التفاصيل:**\n{short_desc}\n\n"
         f"🔗 [اضغط هنا للتقديم والمشاركة]({link})"
     )
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
@@ -59,35 +57,25 @@ def send_status_update(message_text):
     except Exception as e:
         print(f"Error sending status message: {e}")
 
-# 1. فحص منصة HeroX
+# 1. فحص HeroX
 def check_herox():
     global new_challenges_count
     print("--- جاري فحص HeroX ---")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    }
-    url = "https://www.herox.com/explore"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    api_url = "https://www.herox.com/api/challenges?status=open" 
     try:
-        res = requests.get(url, headers=headers, timeout=15)
+        res = requests.get(api_url, headers=headers, timeout=15)
         if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            # البحث عن البطاقات المفتوحة للتقديم
-            cards = soup.select(".challenge-card, .card-challenge, div[class*='challenge-card']")
-            if not cards:
-                cards = soup.select("a[href*='/challenge/']")
-            
-            for card in cards[:10]:
-                title = card.text.strip().split("\n")[0] if card.text else "تحدي مفتوح على HeroX"
-                link = card.get("href", "")
-                if link and not link.startswith("http"):
-                    link = "https://www.herox.com" + link
-                
-                prize = "راجع التفاصيل بالرابط"
-                date_info = "مفتوح للحلول"
-                description = "تحدي ابتكاري مفتوح على منصة HeroX للتطوير والرأي الهندسي والتقني."
+            data = res.json()
+            challenges = data.get("challenges", []) or data.get("results", [])
+            for item in challenges[:10]:
+                title = item.get("title", "غير محدد")
+                link = "https://www.herox.com" + item.get("url", "")
+                prize = item.get("prize_amount", "غير محدد")
+                date_info = item.get("submission_deadline") or item.get("start_date") or "مفتوح للتقديم"
+                description = item.get("description") or item.get("summary") or "تحدي ابتكاري على HeroX."
 
-                if link and "/challenge/" in link and not is_seen(link):
+                if link and not is_seen(link):
                     send_telegram("HeroX", title, prize, date_info, description, link)
                     mark_seen(link)
                     new_challenges_count += 1
@@ -95,7 +83,7 @@ def check_herox():
     except Exception as e:
         print(f"HeroX Error: {e}")
 
-# 2. فحص منصة Kaggle
+# 2. فحص Kaggle
 def check_kaggle():
     global new_challenges_count
     print("--- جاري فحص Kaggle ---")
@@ -110,7 +98,7 @@ def check_kaggle():
                 link = item.get("url", "https://www.kaggle.com/competitions")
                 prize = item.get("reward", "غير محدد")
                 date_info = item.get("deadline") or "مفتوح حالياً"
-                description = item.get("description") or item.get("briefDescription") or "مسابقة ابتكارية وتحليل بيانات على Kaggle."
+                description = item.get("description") or item.get("briefDescription") or "مسابقة ابتكارية على Kaggle."
 
                 if link and not is_seen(link):
                     send_telegram("Kaggle", title, prize, date_info, description, link)
@@ -120,38 +108,73 @@ def check_kaggle():
     except Exception as e:
         print(f"Kaggle Error: {e}")
 
-# 3. فحص منصة InnoCentive
+# 3. فحص InnoCentive (Wazoku GraphQL API)
 def check_innocentive():
     global new_challenges_count
     print("--- جاري فحص InnoCentive ---")
+    url = "https://challenge-center.community.innocentive.com/api/graphql"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Content-Type": "application/json"
     }
-    url = "https://www.innocentive.com/challenges/"
+    query = """
+    query {
+      challenges(first: 10, filter: {status: OPEN}) {
+        edges {
+          node {
+            id
+            title
+            summary
+            rewardAmount
+            slug
+          }
+        }
+      }
+    }
+    """
     try:
-        res = requests.get(url, headers=headers, timeout=15)
+        res = requests.post(url, json={'query': query}, headers=headers, timeout=15)
         if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            # استخراج التحديات المفتوحة
-            elements = soup.select("a[href*='/ar/'], a[href*='/challenge/'], a[href*='innocentive.com/']")
-            for elem in elements[:10]:
-                title = elem.text.strip()
-                link = elem.get("href", "")
-                if link and len(title) > 10:
-                    if not link.startswith("http"):
-                        link = "https://www.innocentive.com" + link
+            data = res.json()
+            challenges = data.get('data', {}).get('challenges', {}).get('edges', [])
+            for item in challenges:
+                node = item.get('node', {})
+                title = node.get('title', 'تحدي جديد على InnoCentive')
+                slug = node.get('slug', '')
+                link = f"https://challenge-center.community.innocentive.com/innovation-management/challenge/{slug}" if slug else "https://challenge-center.community.innocentive.com"
+                prize = str(node.get('rewardAmount', 'راجع الرابط'))
+                description = node.get('summary', 'تحدي مفتوح للحلول والابتكار على منصة InnoCentive.')
 
-                    prize = "جوائز مالية (راجع الرابط)"
-                    date_info = "مفتوح للتقديم"
-                    description = "تحدي ابتكاري يبحث عن حلول علمية وتقنية من منصة InnoCentive."
-
-                    if link and not is_seen(link):
-                        send_telegram("InnoCentive", title, prize, date_info, description, link)
-                        mark_seen(link)
-                        new_challenges_count += 1
-                        print(f"InnoCentive Sent: {title}")
+                if link and not is_seen(link):
+                    send_telegram("InnoCentive", title, prize, "مفتوح للتقديم", description, link)
+                    mark_seen(link)
+                    new_challenges_count += 1
+                    print(f"InnoCentive Sent: {title}")
+        else:
+            fallback_innocentive()
     except Exception as e:
-        print(f"InnoCentive Error: {e}")
+        print(f"InnoCentive API Error: {e}")
+        fallback_innocentive()
+
+def fallback_innocentive():
+    global new_challenges_count
+    url = "https://www.innocentive.com/api/challenge/v1/challenges"
+    try:
+        res = requests.get(url, timeout=15)
+        if res.status_code == 200:
+            items = res.json()
+            for item in items[:10]:
+                title = item.get("title", "تحدي InnoCentive")
+                link = item.get("url", "https://innocentive.com")
+                prize = str(item.get("totalAward", "راجع التفاصيل"))
+                description = item.get("description", "تحدي مفتوح في InnoCentive.")
+                
+                if link and not is_seen(link):
+                    send_telegram("InnoCentive", title, prize, "مفتوح", description, link)
+                    mark_seen(link)
+                    new_challenges_count += 1
+    except Exception as e:
+        print(f"Fallback Error: {e}")
 
 if __name__ == "__main__":
     init_db()
@@ -162,6 +185,6 @@ if __name__ == "__main__":
     check_innocentive()
     
     if new_challenges_count == 0:
-        send_status_update("✅ **تقرير الفحص الدوري:** تم فحص كافة المنصات (Kaggle, HeroX, InnoCentive) بنجاح. لا توجد تحديات جديدة مضافة حديثاً في هذه الدورة. البوت يعمل وجاهز!")
+        send_status_update("✅ **تقرير الفحص الدوري:** تم فحص كافة المنصات (HeroX, Kaggle, InnoCentive) بنجاح. لا توجد تحديات جديدة غير مسجلة حالياً.")
         
     print("انتهى الفحص بنجاح!")
