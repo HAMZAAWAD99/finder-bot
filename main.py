@@ -1,37 +1,11 @@
 import sqlite3
 import requests
-from playwright.sync_api import sync_playwright
+import json
 
 TELEGRAM_BOT_TOKEN = "8846822722:AAGO6PGiEdr-QndV9mqVUEHGCCwDjIo3ZNc"
 TELEGRAM_CHAT_ID = "1178298208"
 
 new_challenges_count = 0
-
-def init_db():
-    conn = sqlite3.connect("seen_challenges.db")
-    cursor = conn.cursor()
-    cursor.execute("DROP TABLE IF EXISTS challenges") # لتصفير الجدول وجلب كل التحديات حالياً
-    cursor.execute("CREATE TABLE IF NOT EXISTS challenges (link TEXT PRIMARY KEY)")
-    conn.commit()
-    conn.close()
-
-def is_seen(link):
-    conn = sqlite3.connect("seen_challenges.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM challenges WHERE link = ?", (link,))
-    res = cursor.fetchone()
-    conn.close()
-    return res is not None
-
-def mark_seen(link):
-    conn = sqlite3.connect("seen_challenges.db")
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO challenges VALUES (?)", (link,))
-        conn.commit()
-    except:
-        pass
-    conn.close()
 
 def send_telegram(platform, title, prize, date_info, description, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -51,108 +25,124 @@ def send_telegram(platform, title, prize, date_info, description, link):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-def run_stealth_parser():
+# ---------- 1. HeroX API Direct ----------
+def check_herox():
     global new_challenges_count
+    print("--- جاري فحص HeroX ---")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json, text/plain, */*"
+    }
+    url = "https://www.herox.com/api/challenges?page=1&status=open"
+    try:
+        res = requests.get(url, headers=headers, timeout=20)
+        print(f"HeroX Status: {res.status_code}")
+        if res.status_code == 200:
+            data = res.json()
+            items = data.get("challenges", []) or data.get("results", []) or data
+            
+            # إذا كانت النتيجة قائمة مباشرة
+            if isinstance(items, dict):
+                items = items.get("items", [])
+                
+            count = 0
+            for item in items[:10]:
+                title = item.get("title") or item.get("name", "تحدي على HeroX")
+                slug = item.get("url") or item.get("slug") or ""
+                link = "https://www.herox.com" + slug if slug.startswith("/") else slug
+                prize = str(item.get("prize_amount") or item.get("total_prize") or "راجع التفاصيل")
+                date_info = str(item.get("submission_deadline") or "مفتوح")
+                desc = item.get("description") or item.get("summary") or "تحدي ابتكاري مفتوح في HeroX."
+
+                if link and title:
+                    send_telegram("HeroX", title, prize, date_info, desc, link)
+                    count += 1
+                    new_challenges_count += 1
+            print(f"HeroX Results: {count}")
+    except Exception as e:
+        print(f"HeroX Error: {e}")
+
+# ---------- 2. InnoCentive / Wazoku API ----------
+def check_innocentive():
+    global new_challenges_count
+    print("--- جاري فحص InnoCentive ---")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Content-Type": "application/json"
+    }
     
-    with sync_playwright() as p:
-        # تشغيل المتصفح بمواصفات حقيقية لتجاوز الـ WAF
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800}
-        )
-        page = context.new_page()
-
-        # ---------- 1. HeroX Parser ----------
-        print("--- جاري فحص HeroX ---")
-        try:
-            page.goto("https://www.herox.com/explore", wait_until="domcontentloaded", timeout=40000)
-            page.wait_for_timeout(5000) # انتظار لتجاوز فحص Cloudflare
-            
-            # استخراج كافة الروابط المباشرة للتحديات
-            elements = page.eval_on_selector_all(
-                "a[href*='/challenge/']",
-                "nodes => nodes.map(n => ({ text: n.innerText.trim(), href: n.href }))"
-            )
-            
-            found_herox = 0
-            for item in elements:
-                link = item['href']
-                title = item['text'].split('\n')[0]
+    # GraphQL Query المباشرة التي يجلب بها الموقع بياناته
+    url = "https://challenge-center.community.innocentive.com/api/graphql"
+    query = """
+    {
+      challenges(first: 10) {
+        edges {
+          node {
+            title
+            slug
+            rewardAmount
+            summary
+          }
+        }
+      }
+    }
+    """
+    try:
+        res = requests.post(url, json={"query": query}, headers=headers, timeout=20)
+        print(f"InnoCentive Status: {res.status_code}")
+        if res.status_code == 200:
+            data = res.json()
+            edges = data.get("data", {}).get("challenges", {}).get("edges", [])
+            count = 0
+            for edge in edges:
+                node = edge.get("node", {})
+                title = node.get("title")
+                slug = node.get("slug")
+                prize = str(node.get("rewardAmount") or "20,000$ (راجع التفاصيل)")
+                desc = node.get("summary") or "تحدي ابتكاري مفتوح في InnoCentive."
                 
-                # تصفية الروابط الفرعية لضمان أخذ رابط التحدي الرئيسي فقط
-                if link and "/challenge/" in link and not is_seen(link) and len(title) > 3:
-                    send_telegram("HeroX", title, "راجع التفاصيل بالرابط", "مفتوح للتقديم", "تحدي ابتكاري متاح حالياً على منصة HeroX.", link)
-                    mark_seen(link)
+                if slug:
+                    link = f"https://challenge-center.community.innocentive.com/innovation-management/challenge/{slug}"
+                    send_telegram("InnoCentive", title, prize, "مفتوح للتقديم", desc, link)
+                    count += 1
                     new_challenges_count += 1
-                    found_herox += 1
-                    if found_herox >= 10: break
-            print(f"تم جلب {found_herox} تحدي من HeroX")
-        except Exception as e:
-            print(f"HeroX Error: {e}")
+            print(f"InnoCentive Results: {count}")
+    except Exception as e:
+        print(f"InnoCentive Error: {e}")
 
-        # ---------- 2. InnoCentive Parser ----------
-        print("--- جاري فحص InnoCentive ---")
-        try:
-            page.goto("https://challenge-center.community.innocentive.com/innovation-management/challenges", wait_until="networkidle", timeout=40000)
-            page.wait_for_timeout(6000)
-            
-            elements = page.eval_on_selector_all(
-                "a[href*='/challenge/']",
-                "nodes => nodes.map(n => ({ text: n.innerText.trim(), href: n.href }))"
-            )
-            
-            found_innocentive = 0
-            for item in elements:
-                link = item['href']
-                title = item['text'].split('\n')[0]
-                
-                if link and not is_seen(link) and len(title) > 5:
-                    send_telegram("InnoCentive", title, "جوائز مالية (راجع الرابط)", "مفتوح للتقديم", "تحدي ابتكاري يبحث عن حلول وتقنيات على InnoCentive.", link)
-                    mark_seen(link)
-                    new_challenges_count += 1
-                    found_innocentive += 1
-                    if found_innocentive >= 10: break
-            print(f"تم جلب {found_innocentive} تحدي من InnoCentive")
-        except Exception as e:
-            print(f"InnoCentive Error: {e}")
-
-        browser.close()
-
-# ---------- 3. Kaggle API Parser ----------
+# ---------- 3. Kaggle API ----------
 def check_kaggle():
     global new_challenges_count
     print("--- جاري فحص Kaggle ---")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res = requests.get("https://www.kaggle.com/api/v1/competitions/list", headers=headers, timeout=15)
+        print(f"Kaggle Status: {res.status_code}")
         if res.status_code == 200:
             items = res.json()
+            count = 0
             for item in items[:10]:
                 title = item.get("title", "مسابقة Kaggle")
                 link = item.get("url", "https://www.kaggle.com/competitions")
                 prize = str(item.get("reward", "غير محدد"))
                 date_info = str(item.get("deadline", "مفتوح"))
-                description = item.get("briefDescription") or "مسابقة ابتكارية متاح التنافس فيها على Kaggle."
+                description = item.get("briefDescription") or "مسابقة ابتكارية على Kaggle."
 
-                if link and not is_seen(link):
-                    send_telegram("Kaggle", title, prize, date_info, description, link)
-                    mark_seen(link)
-                    new_challenges_count += 1
+                send_telegram("Kaggle", title, prize, date_info, description, link)
+                count += 1
+                new_challenges_count += 1
+            print(f"Kaggle Results: {count}")
     except Exception as e:
         print(f"Kaggle Error: {e}")
 
 if __name__ == "__main__":
-    init_db()
-    print("بدء عملية الـ Parsing وتجاوز الـ WAF...")
-    run_stealth_parser()
+    print("بدء الاستخراج المباشر عبر الـ APIs...")
+    check_herox()
+    check_innocentive()
     check_kaggle()
     
     if new_challenges_count == 0:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "✅ **تقرير الفحص:** تم تنفيذ الـ Parser بنجاح مع تجاوز الـ WAF، ولم يتم العثور على تحديات جديدة."}, timeout=15)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "✅ **تقرير الفحص:** تمت العملية ولم تتلق الـ APIs بيانات جديدة."}, timeout=15)
         
-    print("انتهى الفحص بنجاح!")
+    print("انتهت العملية!")
