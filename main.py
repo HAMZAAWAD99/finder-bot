@@ -1,5 +1,5 @@
 import requests
-from bs4 import BeautifulSoup
+import re
 
 TELEGRAM_BOT_TOKEN = "8846822722:AAGO6PGiEdr-QndV9mqVUEHGCCwDjIo3ZNc"
 TELEGRAM_CHAT_ID = "1178298208"
@@ -24,7 +24,7 @@ def send_telegram(platform, title, prize, date_info, description, link):
         print(f"Telegram Error: {e}")
 
 def get_page_content(target_url):
-    # تمرير الطلب عبر ScraperAPI لتجاوز الـ WAF و Cloudflare
+    # إرسال الطلب مع تفعيل الرندر لتجاوز حماية WAF و Cloudflare
     api_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={target_url}&render=true"
     try:
         response = requests.get(api_url, timeout=60)
@@ -37,6 +37,20 @@ def get_page_content(target_url):
         print(f"Exception fetching {target_url}: {e}")
         return None
 
+def extract_links_and_titles(html_content):
+    # استخراج الروابط والنصوص المباشرة عبر Regular Expressions بدون مكتبات خارجية
+    pattern = r'<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>(.*?)</a>'
+    matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
+    
+    extracted = []
+    for href, raw_text in matches:
+        # تنظيف النص من أوسمة الـ HTML الزائدة
+        clean_text = re.sub(r'<[^>]+>', '', raw_text).strip()
+        clean_text = ' '.join(clean_text.split())
+        if href and clean_text:
+            extracted.append((href, clean_text))
+    return extracted
+
 # ---------- 1. HeroX ----------
 def check_herox():
     print("--- جاري فحص HeroX عبر ScraperAPI ---")
@@ -44,19 +58,16 @@ def check_herox():
     if not html:
         return 0
     
-    soup = BeautifulSoup(html, "html.parser")
-    links = soup.find_all("a", href=True)
+    items = extract_links_and_titles(html)
     count = 0
     seen = set()
 
-    for a in links:
-        href = a['href']
-        title = a.get_text(strip=True)
+    for href, title in items:
         if "/challenge/" in href or "/project/" in href:
             full_url = "https://www.herox.com" + href if href.startswith("/") else href
             if full_url not in seen and len(title) > 5:
                 seen.add(full_url)
-                send_telegram("HeroX", title, "راجع الرابط لتفاصيل الجائزة", "مفتوح للتقديم", "تحدي ابتكاري متاح على HeroX.", full_url)
+                send_telegram("HeroX", title, "راجع الرابط لتفاصيل الجائزة", "مفتوح للتقديم", "تحدي ابتكاري متاح حالياً على HeroX.", full_url)
                 count += 1
                 if count >= 5: break
     print(f"HeroX Results: {count}")
@@ -69,19 +80,16 @@ def check_innocentive():
     if not html:
         return 0
     
-    soup = BeautifulSoup(html, "html.parser")
-    links = soup.find_all("a", href=True)
+    items = extract_links_and_titles(html)
     count = 0
     seen = set()
 
-    for a in links:
-        href = a['href']
-        title = a.get_text(strip=True)
+    for href, title in items:
         if "/challenge/" in href:
             full_url = "https://challenge-center.community.innocentive.com" + href if href.startswith("/") else href
             if full_url not in seen and len(title) > 5:
                 seen.add(full_url)
-                send_telegram("InnoCentive", title, "جوائز مالية (راجع الرابط)", "مفتوح للتقديم", "تحدي ابتكاري متاح على منصة InnoCentive.", full_url)
+                send_telegram("InnoCentive", title, "جوائز مالية (راجع التفاصيل بالرابط)", "مفتوح للتقديم", "تحدي ابتكاري يبحث عن حلول على InnoCentive.", full_url)
                 count += 1
                 if count >= 5: break
     print(f"InnoCentive Results: {count}")
@@ -94,14 +102,11 @@ def check_kaggle():
     if not html:
         return 0
     
-    soup = BeautifulSoup(html, "html.parser")
-    links = soup.find_all("a", href=True)
+    items = extract_links_and_titles(html)
     count = 0
     seen = set()
 
-    for a in links:
-        href = a['href']
-        title = a.get_text(strip=True)
+    for href, title in items:
         if "/competitions/" in href and not href.endswith("/competitions"):
             full_url = "https://www.kaggle.com" + href if href.startswith("/") else href
             if full_url not in seen and len(title) > 3:
@@ -113,7 +118,7 @@ def check_kaggle():
     return count
 
 if __name__ == "__main__":
-    print("بدء عملية الاستخراج الحقيقية وتجاوز الـ WAF...")
+    print("بدء عملية الاستخراج المباشرة...")
     c1 = check_herox()
     c2 = check_innocentive()
     c3 = check_kaggle()
@@ -121,6 +126,6 @@ if __name__ == "__main__":
     total = c1 + c2 + c3
     if total == 0:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚠️ **تنبيه:** لم يتم العثور على تحديات، يرجى مراجعة الرصيد في ScraperAPI."}, timeout=15)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚠️ **تنبيه:** اكتمل التشغيل ولم يتم العثور على روابط تحديات جديدة."}, timeout=15)
         
     print(f"انتهت العملية! تم إرسال {total} تحدي بنجاح.")
