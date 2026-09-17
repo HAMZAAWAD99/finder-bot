@@ -1,12 +1,9 @@
-import sqlite3
 import requests
-import time
-from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 
 TELEGRAM_BOT_TOKEN = "8846822722:AAGO6PGiEdr-QndV9mqVUEHGCCwDjIo3ZNc"
 TELEGRAM_CHAT_ID = "1178298208"
-
-new_challenges_count = 0
+SCRAPER_API_KEY = "c4abf51b7121d19fde5bfd339c7c5ba32e34560079c12fce860e966794bbcafd"
 
 def send_telegram(platform, title, prize, date_info, description, link):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -26,124 +23,104 @@ def send_telegram(platform, title, prize, date_info, description, link):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-def scrape_with_stealth_browser():
-    global new_challenges_count
+def get_page_content(target_url):
+    # تمرير الطلب عبر ScraperAPI لتجاوز الـ WAF و Cloudflare
+    api_url = f"http://api.scraperapi.com?api_key={SCRAPER_API_KEY}&url={target_url}&render=true"
+    try:
+        response = requests.get(api_url, timeout=60)
+        if response.status_code == 200:
+            return response.text
+        else:
+            print(f"ScraperAPI Error ({target_url}): Status {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"Exception fetching {target_url}: {e}")
+        return None
+
+# ---------- 1. HeroX ----------
+def check_herox():
+    print("--- جاري فحص HeroX عبر ScraperAPI ---")
+    html = get_page_content("https://www.herox.com/crowdsourcing-projects")
+    if not html:
+        return 0
     
-    with sync_playwright() as p:
-        # تشغيل متصفح كامل حقيقي لتجاوز الـ 403 Cloudflare
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox"
-            ]
-        )
-        
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            viewport={"width": 1366, "height": 768},
-            locale="en-US"
-        )
-        
-        page = context.new_page()
+    soup = BeautifulSoup(html, "html.parser")
+    links = soup.find_all("a", href=True)
+    count = 0
+    seen = set()
 
-        # ---------- 1. HeroX Scraper ----------
-        print("--- جاري تصفح HeroX ---")
-        try:
-            page.goto("https://www.herox.com/explore", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000) # انتظار تجاوز حماية Cloudflare
-            
-            # استخراج روابط البطاقات
-            links = page.eval_on_selector_all(
-                "a[href*='/challenge/']",
-                "nodes => nodes.map(n => ({ href: n.href, text: n.innerText }))"
-            )
-            
-            herox_added = 0
-            seen_links = set()
-            for item in links:
-                href = item["href"]
-                text = item["text"].strip()
-                title = text.split("\n")[0] if text else "تحدي مفتوح على HeroX"
-                
-                if href and "/challenge/" in href and href not in seen_links and len(title) > 3:
-                    seen_links.add(href)
-                    send_telegram("HeroX", title, "راجع التفاصيل في الرابط", "مفتوح للتقديم", "تحدي ابتكاري مفتوح للتقديم الآن على منصة HeroX.", href)
-                    herox_added += 1
-                    new_challenges_count += 1
-                    if herox_added >= 10: break
-            print(f"تم جلب {herox_added} تحدي من HeroX بنجاح!")
-        except Exception as e:
-            print(f"HeroX Browser Error: {e}")
+    for a in links:
+        href = a['href']
+        title = a.get_text(strip=True)
+        if "/challenge/" in href or "/project/" in href:
+            full_url = "https://www.herox.com" + href if href.startswith("/") else href
+            if full_url not in seen and len(title) > 5:
+                seen.add(full_url)
+                send_telegram("HeroX", title, "راجع الرابط لتفاصيل الجائزة", "مفتوح للتقديم", "تحدي ابتكاري متاح على HeroX.", full_url)
+                count += 1
+                if count >= 5: break
+    print(f"HeroX Results: {count}")
+    return count
 
-        # ---------- 2. InnoCentive Scraper ----------
-        print("--- جاري تصفح InnoCentive ---")
-        try:
-            page.goto("https://challenge-center.community.innocentive.com/innovation-management/challenges", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(7000) # انتظار تحميل تطبيق الصفحة الواحدة SPA
-            
-            links = page.eval_on_selector_all(
-                "a[href*='/challenge/']",
-                "nodes => nodes.map(n => ({ href: n.href, text: n.innerText }))"
-            )
-            
-            innocentive_added = 0
-            seen_links_inno = set()
-            for item in links:
-                href = item["href"]
-                text = item["text"].strip()
-                title = text.split("\n")[0] if text else "تحدي InnoCentive"
-                
-                if href and href not in seen_links_inno and len(title) > 5:
-                    seen_links_inno.add(href)
-                    send_telegram("InnoCentive", title, "جوائز مالية (راجع الرابط)", "مفتوح حالياً", "تحدي مفتوح للحلول والابتكار من منصة InnoCentive.", href)
-                    innocentive_added += 1
-                    new_challenges_count += 1
-                    if innocentive_added >= 10: break
-            print(f"تم جلب {innocentive_added} تحدي من InnoCentive بنجاح!")
-        except Exception as e:
-            print(f"InnoCentive Browser Error: {e}")
+# ---------- 2. InnoCentive ----------
+def check_innocentive():
+    print("--- جاري فحص InnoCentive عبر ScraperAPI ---")
+    html = get_page_content("https://challenge-center.community.innocentive.com/innovation-management/challenges")
+    if not html:
+        return 0
+    
+    soup = BeautifulSoup(html, "html.parser")
+    links = soup.find_all("a", href=True)
+    count = 0
+    seen = set()
 
-        # ---------- 3. Kaggle Scraper ----------
-        print("--- جاري تصفح Kaggle ---")
-        try:
-            page.goto("https://www.kaggle.com/competitions", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000)
-            
-            links = page.eval_on_selector_all(
-                "a[href*='/competitions/']",
-                "nodes => nodes.map(n => ({ href: n.href, text: n.innerText }))"
-            )
-            
-            kaggle_added = 0
-            seen_kaggle = set()
-            for item in links:
-                href = item["href"]
-                text = item["text"].strip()
-                title = text.split("\n")[0] if text else "مسابقة Kaggle"
-                
-                if href and href not in seen_kaggle and len(title) > 3 and "/competitions/" in href:
-                    # استبعاد الروابط الفرعية العامة
-                    if href.endswith("/competitions") or "/about" in href:
-                        continue
-                    seen_kaggle.add(href)
-                    send_telegram("Kaggle", title, "محددة في صفحة المسابقة", "مفتوحة التنافس", "مسابقة تحليل بيانات وذكاء اصطناعي متاحة على Kaggle.", href)
-                    kaggle_added += 1
-                    new_challenges_count += 1
-                    if kaggle_added >= 10: break
-            print(f"تم جلب {kaggle_added} مسابقة من Kaggle بنجاح!")
-        except Exception as e:
-            print(f"Kaggle Browser Error: {e}")
+    for a in links:
+        href = a['href']
+        title = a.get_text(strip=True)
+        if "/challenge/" in href:
+            full_url = "https://challenge-center.community.innocentive.com" + href if href.startswith("/") else href
+            if full_url not in seen and len(title) > 5:
+                seen.add(full_url)
+                send_telegram("InnoCentive", title, "جوائز مالية (راجع الرابط)", "مفتوح للتقديم", "تحدي ابتكاري متاح على منصة InnoCentive.", full_url)
+                count += 1
+                if count >= 5: break
+    print(f"InnoCentive Results: {count}")
+    return count
 
-        browser.close()
+# ---------- 3. Kaggle ----------
+def check_kaggle():
+    print("--- جاري فحص Kaggle عبر ScraperAPI ---")
+    html = get_page_content("https://www.kaggle.com/competitions")
+    if not html:
+        return 0
+    
+    soup = BeautifulSoup(html, "html.parser")
+    links = soup.find_all("a", href=True)
+    count = 0
+    seen = set()
+
+    for a in links:
+        href = a['href']
+        title = a.get_text(strip=True)
+        if "/competitions/" in href and not href.endswith("/competitions"):
+            full_url = "https://www.kaggle.com" + href if href.startswith("/") else href
+            if full_url not in seen and len(title) > 3:
+                seen.add(full_url)
+                send_telegram("Kaggle", title, "راجع التفاصيل بالرابط", "مفتوح حالياً", "مسابقة ابتكار وتحليل بيانات على Kaggle.", full_url)
+                count += 1
+                if count >= 5: break
+    print(f"Kaggle Results: {count}")
+    return count
 
 if __name__ == "__main__":
-    print("بدء عملية التصفح الحقيقي وتجاوز حماية الـ 403...")
-    scrape_with_stealth_browser()
+    print("بدء عملية الاستخراج الحقيقية وتجاوز الـ WAF...")
+    c1 = check_herox()
+    c2 = check_innocentive()
+    c3 = check_kaggle()
     
-    if new_challenges_count == 0:
+    total = c1 + c2 + c3
+    if total == 0:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚠️ **تنبيه:** لم يتم العثور على تحديات متوفرة حالياً بالصفحات المفتوحة."}, timeout=15)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": "⚠️ **تنبيه:** لم يتم العثور على تحديات، يرجى مراجعة الرصيد في ScraperAPI."}, timeout=15)
         
-    print("انتهت العملية بالكامل!")
+    print(f"انتهت العملية! تم إرسال {total} تحدي بنجاح.")
